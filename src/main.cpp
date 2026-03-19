@@ -8,7 +8,7 @@
 
 
 #define TEMP_PIN 13
-#define THERMISTER_PIN 2
+#define THERMISTOR_PIN 34
 
 OneWire oneWire(TEMP_PIN);
 DallasTemperature sensors(&oneWire);
@@ -21,24 +21,26 @@ void setup() {
   sensors.begin();
   sensors.setResolution(12);
   Serial.println("DS18B20 ready");
-  pinMode(THERMISTER_PIN, INPUT);
+  pinMode(THERMISTOR_PIN, INPUT);
 
-  while (status != WL_CONNECTED){
+  while (WiFi.status() != WL_CONNECTED){
+
     status = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("No Wifi Connection");
+
+    if (WiFi.status() != WL_CONNECTED){
+      Serial.print("No Wifi Connection\n");
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
-  Serial.print("Wifi connected!");
-
-
+  Serial.print("Wifi connected!\n");
 }
 
 void loop() {
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
 
-  int analogValue = analogRead(THERMISTER_PIN);
+  int analogValue = analogRead(THERMISTOR_PIN);
   Serial.print("Thermistor ADC Value: ");
   Serial.println(analogValue);
 
