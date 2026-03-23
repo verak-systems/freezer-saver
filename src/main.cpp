@@ -4,7 +4,9 @@
 #include <FreeRTOSConfig.h>
 #include <Config.h>
 #include <WiFi.h>
-#include <MqttClient.h>
+#include <PubSubClient.h>
+#include <Secrets.h>
+#include <string>
 
 
 #define TEMP_PIN 13
@@ -14,8 +16,8 @@ OneWire oneWire(TEMP_PIN);
 DallasTemperature sensors(&oneWire);
 
 int status = WL_IDLE_STATUS;
-WiFiClient client;
-MqttClient mqttClient(client);
+WiFiClient wifiClient;
+PubSubClient mqttClient;
 
 void setup() {
   Serial.begin(115200);
@@ -38,12 +40,15 @@ void setup() {
   Serial.print("Wifi connected!\n");
   Serial.print("Connecting to MQTT Broker");
 
-  while (!mqttClient.connect(BROKER, MQTT_PORT)){
+  mqttClient.setClient(wifiClient);
+  mqttClient.setServer(BROKER, MQTT_PORT);
+
+  while (!mqttClient.connect("esp32-temp", MQQT_USER, MQTT_PASS)){
     Serial.print(".");
 
   }
 
-  Serial.print("Connected to MQTT Broker");
+  Serial.print("Connected to MQTT Broker\n");
 }
 
 void loop() {
@@ -55,14 +60,13 @@ void loop() {
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    while(!mqttClient.connect(BROKER, MQTT_PORT)){
+    while(!mqttClient.connected()){
       Serial.print(".");
+      if (mqttClient.connect("esp32", MQQT_USER, MQTT_PASS)){break;}
     }
 
     Serial.print("RECONNECTED");
   }
-
-  mqttClient.poll();
 
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
@@ -71,17 +75,21 @@ void loop() {
   Serial.print("Thermistor ADC Value: ");
   Serial.println(analogValue);
 
+  char value[20];
+
   if (tempC == DEVICE_DISCONNECTED_C) {
     Serial.println("Error: sensor not found. Check wiring and pull-up resistor.");
+    strcpy(value,"Temp Unavailble");
+
   } else {
     Serial.print("Temperature: ");
     Serial.print(tempC, 1);
     Serial.println(" °C");
+    dtostrf(tempC, 4, 1, value);
+    strcat(value, " °C");
   }
 
-  mqttClient.beginMessage(TEMP_TOPIC);
-  mqttClient.print(tempC);
-  mqttClient.endMessage();
+  mqttClient.publish(TEMP_TOPIC, value, true);
 
   vTaskDelay(pdMS_TO_TICKS(5000));
 
