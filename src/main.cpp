@@ -8,6 +8,7 @@
 #include <Secrets.h>
 #include <string>
 #include <ArduinoJson.h>
+#include <time.h>
 
 
 #define TEMP_PIN 13
@@ -16,10 +17,37 @@
 OneWire oneWire(TEMP_PIN);
 DallasTemperature sensors(&oneWire);
 
+const char* ntpServer = "pool.ntp.org";
+const int  estOffset_sec = -18000;
+
 int status = WL_IDLE_STATUS;
 WiFiClient wifiClient;
 PubSubClient mqttClient;
 StaticJsonDocument<200> data;
+
+String buildJson(StaticJsonDocument<200>& doc, char* device, char* key, float value, char* unit){
+  doc["device"] = device;
+  doc[key] = value;
+  doc["unit"] = unit;
+  // TODO: Add dst check somewhere, or would this be better done on the rpi?
+  struct tm timeinfo;
+  char timestamp[32];
+
+  if(getLocalTime(&timeinfo)){
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  } 
+  else{
+    strcpy(timestamp, "Unavailable");
+  }
+
+  doc["timestamp"] = timestamp;
+  Serial.print(&timeinfo);
+
+  String payload;
+  serializeJson(data, payload);
+
+  return payload;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -40,6 +68,9 @@ void setup() {
   }
 
   Serial.print("Wifi connected!\n");
+
+  configTime(estOffset_sec, 0, ntpServer);
+
   Serial.print("Connecting to MQTT Broker");
 
   mqttClient.setClient(wifiClient);
@@ -86,16 +117,14 @@ void loop() {
     Serial.println(" °C");
   }
 
-  data["Device"] = "ESP32";
-  data["digitalTemp"] = tempC;
-  data["unit"] = "°C";
-  data["timestamp"] = "";
-  data["resistance"] = analogValue;
+  String payload = buildJson(data, "ESP32", "digitalTemp", tempC, "°C");
+  mqttClient.publish(TEMP_TOPIC, payload.c_str(), true);
+  data.clear();
 
-  char payload[128];
-  serializeJson(data, payload);
+  payload = buildJson(data, "ESP32", "analogTemp", 0, "°C");
+  mqttClient.publish(TEMP_TOPIC, payload.c_str(), true);
+  data.clear();
 
-  mqttClient.publish(TEMP_TOPIC, payload, true);
 
   vTaskDelay(pdMS_TO_TICKS(5000));
 
