@@ -8,21 +8,30 @@
 #include <string>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <Wire.h>
+#include <U8g2lib.h>
 
 
 #define TEMP_PIN D7
 #define THERMISTOR_PIN A0
+
+// Board-specific I2C pins: SDA=D6(GPIO12), SCL=D5(GPIO14)
+#define OLED_SDA D2
+#define OLED_SCL D1
 
 OneWire oneWire(TEMP_PIN);
 DallasTemperature sensors(&oneWire);
 
 const char* ntpServer = "pool.ntp.org";
 const int  estOffset_sec = -18000;
+const char* unit = "°C";
 
 int status = WL_IDLE_STATUS;
 WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
+PubSubClient mqttClient;
 JsonDocument data;
+
+U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /*clock=*/12, /*data=*/14, U8X8_PIN_NONE);
 
 
 String buildJson(JsonDocument& doc, char* device, char* key, float value, char* unit){
@@ -35,7 +44,7 @@ String buildJson(JsonDocument& doc, char* device, char* key, float value, char* 
 
   if(getLocalTime(&timeinfo)){
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeinfo);
-  } 
+  }
   else{
     strcpy(timestamp, "Unavailable");
   }
@@ -43,7 +52,7 @@ String buildJson(JsonDocument& doc, char* device, char* key, float value, char* 
   doc["timestamp"] = timestamp;
 
   String payload;
-  serializeJson(data, payload);
+  serializeJson(doc, payload);
 
   return payload;
 }
@@ -53,17 +62,15 @@ void setup() {
   Serial.begin(115200);
   sensors.begin();
   sensors.setResolution(12);
-  Serial.println("DS18B20 ready");
+  Serial.println("\n\nDS18B20 ready");
   pinMode(THERMISTOR_PIN, INPUT);
 
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   while (WiFi.status() != WL_CONNECTED){
 
-    status = WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-    if (WiFi.status() != WL_CONNECTED){
-      Serial.print("No Wifi Connection\n");
-    }
+    Serial.print("Wi-Fi disconnected -> Status: ");
+    Serial.println(WiFi.status());
     delay(1000);
   }
 
@@ -71,17 +78,23 @@ void setup() {
 
   configTime(estOffset_sec, 0, ntpServer);
 
-  Serial.print("Connecting to MQTT Broker");
+  Serial.print("Connecting to MQTT Broker\n");
 
+  mqttClient.setClient(wifiClient);
   mqttClient.setServer(BROKER, MQTT_PORT);
 
   while (!mqttClient.connect("esp32-Pub", MQQT_USER, MQTT_PASS)){
     Serial.print(".");
-
   }
 
   Serial.print("Connected to MQTT Broker\n");
 
+  u8g2.begin();
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_7x14B_tr);
+}
+
+void loop() {
   if (!WiFi.isConnected() || !mqttClient.connected()){
     Serial.print("Wifi/MQTT connection Dropped\nRetrying connection");
     while(WiFi.status() != WL_CONNECTED){
@@ -93,6 +106,7 @@ void setup() {
     while(!mqttClient.connected()){
       Serial.print(".");
       if (mqttClient.connect("esp32-Pub", MQQT_USER, MQTT_PASS)){break;}
+      delay(1000);
     }
 
     Serial.print("RECONNECTED");
@@ -109,22 +123,24 @@ void setup() {
     Serial.println("Error: sensor not found. Check wiring and pull-up resistor.");
     data['status'] = "Unavaible";
   } else {
-    Serial.print("Temperature: ");
-    Serial.print(tempC, 1);
-    Serial.println(" °C");
+    
   }
 
   String payload = buildJson(data, "ESP32", "digitalTemp", tempC, "°C");
   mqttClient.publish(TEMP_TOPIC, payload.c_str(), true);
   data.clear();
 
-  payload = buildJson(data, "ESP32", "analogTemp", 0, "°C");
-  mqttClient.publish(TEMP_TOPIC, payload.c_str(), true);
-  data.clear();
-
-  ESP.deepSleep(5e6);
-}
-
-void loop() {
+  char val[15];
   
+
+  dtostrf(tempC, 7, 3, val);
+
+  strncat(val, unit, 13);
+
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 10, "Fridge Temp Stats");
+  u8g2.drawStr(0, 30, val);
+  u8g2.sendBuffer();
+
+  delay(5000);
 }
