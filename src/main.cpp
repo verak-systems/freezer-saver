@@ -3,6 +3,8 @@
 #include <DallasTemperature.h>
 #include <Config.h>
 #include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <ESP8266WebServer.h>
 #include <PubSubClient.h>
 #include <Secrets.h>
 #include <string>
@@ -10,7 +12,7 @@
 #include <time.h>
 #include <Wire.h>
 #include <U8g2lib.h>
-
+#include "twilio.hpp"
 
 #define TEMP_PIN D7
 #define THERMISTOR_PIN A0
@@ -19,12 +21,17 @@
 #define OLED_SDA D2
 #define OLED_SCL D1
 
+const float ALARM_TEMP = 28.0;
+const int send_cap = 5;
+int cur_send;
+char msg[128];
+
 OneWire oneWire(TEMP_PIN);
 DallasTemperature sensors(&oneWire);
 
-const char* ntpServer = "pool.ntp.org";
-const int  estOffset_sec = -18000;
-const char* unit = "°C";
+const char *ntpServer = "pool.ntp.org";
+const int estOffset_sec = -18000;
+const char *unit = "°C";
 
 int status = WL_IDLE_STATUS;
 WiFiClient wifiClient;
@@ -32,32 +39,83 @@ PubSubClient mqttClient;
 JsonDocument data;
 
 U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /*clock=*/12, /*data=*/14, U8X8_PIN_NONE);
+const char fingerprint[] = "7C 92 41 AF E2 D2 67 A3 7B 92 C6 DA 05 31 CD E2 6A 1D 45 48";
+const char *account_ssid = TWILIO_SSID;
+const char *auth_token = TWILIO_TOKEN;
 
+String master_num = MASTER_NUM;
 
-String buildJson(JsonDocument& doc, char* device, char* key, float value, char* unit){
-  doc["device"] = device;
-  doc[key] = value;
-  doc["unit"] = unit;
-  // TODO: Add dst check somewhere, or would this be better done on the rpi?
-  struct tm timeinfo;
-  char timestamp[32];
+String to_num = TO_NUM;
+String from_num = FROM_NUM;
 
-  if(getLocalTime(&timeinfo)){
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &timeinfo);
+Twilio *twilio;
+ESP8266WebServer twilio_server(8000);
+
+ String response;
+
+void handle_message()
+{
+  bool authorized = false;
+  char command = '\0';
+
+  Serial.println("Incoming connection!");
+
+  for (int i = 0; i < twilio_server.args(); i++)
+  {
+    Serial.print(twilio_server.argName(i));
+    Serial.print(": ");
+    Serial.println(twilio_server.arg(i));
+
+    if (twilio_server.argName(i) == "From" and twilio_server.arg(i) == master_num)
+    {
+      authorized = true;
+    }
+    else if (twilio_server.argName(i) == "Body")
+    {
+      if (twilio_server.arg(i) == "?" or twilio_server.arg(i) == "0" or twilio_server.arg(i) == "1")
+      {
+        command = twilio_server.arg(i)[0];
+      }
+    }
+
+    String response = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>";
+    if (command != '\0')
+    {
+      if (authorized)
+      {
+        switch (command)
+        {
+        case '?':
+        default:
+          response += "<Response><Message>"
+                      "0 - Light off, 1 - Light On, "
+                      "? - Help\n"
+                      "The light is currently: ";
+          response += digitalRead(LED_BUILTIN);
+          response += "</Message></Response>";
+          break;
+        }
+      }
+      else
+      {
+        response += "<Response><Message>"
+                    "Unauthorized!"
+                    "</Message></Response>";
+      }
+    }
+    else
+    {
+      response += "<Response><Message>"
+                  "Look: a SMS response from an ESP8266!"
+                  "</Message></Response>";
+    }
+
+    twilio_server.send(200, "application/xml", response);
   }
-  else{
-    strcpy(timestamp, "Unavailable");
-  }
-
-  doc["timestamp"] = timestamp;
-
-  String payload;
-  serializeJson(doc, payload);
-
-  return payload;
 }
 
-void setup() {
+void setup()
+{
   delay(100);
   Serial.begin(115200);
   sensors.begin();
@@ -65,76 +123,77 @@ void setup() {
   Serial.println("\n\nDS18B20 ready");
   pinMode(THERMISTOR_PIN, INPUT);
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  while (WiFi.status() != WL_CONNECTED){
-
+  while (WiFi.status() != WL_CONNECTED)
+  {
     Serial.print("Wi-Fi disconnected -> Status: ");
     Serial.println(WiFi.status());
     delay(1000);
   }
 
-  Serial.print("Wifi connected!\n");
+  Serial.println("Wifi connected!\n");
+  Serial.println(WiFi.localIP());
+
+  twilio = new Twilio(account_ssid, auth_token, fingerprint);
+ 
+  bool success = twilio->send_message(
+    to_num,
+    from_num,
+    "Fridge monitor stared!",
+    response
+  );
+
+  // twilio_server.on("/message", handle_message);
+  twilio_server.begin();
 
   configTime(estOffset_sec, 0, ntpServer);
-
-  Serial.print("Connecting to MQTT Broker\n");
-
-  mqttClient.setClient(wifiClient);
-  mqttClient.setServer(BROKER, MQTT_PORT);
-
-  while (!mqttClient.connect("esp32-Pub", MQQT_USER, MQTT_PASS)){
-    Serial.print(".");
-  }
-
-  Serial.print("Connected to MQTT Broker\n");
 
   u8g2.begin();
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_7x14B_tr);
 }
 
-void loop() {
-  if (!WiFi.isConnected() || !mqttClient.connected()){
+void loop()
+{
+  if (!WiFi.isConnected())
+  {
     Serial.print("Wifi/MQTT connection Dropped\nRetrying connection");
-    while(WiFi.status() != WL_CONNECTED){
+    while (WiFi.status() != WL_CONNECTED)
+    {
       Serial.print(".");
       WiFi.reconnect();
-      delay(1000);
-    }
-
-    while(!mqttClient.connected()){
-      Serial.print(".");
-      if (mqttClient.connect("esp32-Pub", MQQT_USER, MQTT_PASS)){break;}
       delay(1000);
     }
 
     Serial.print("RECONNECTED");
   }
 
+  twilio_server.handleClient();
+
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
 
-  int analogValue = analogRead(THERMISTOR_PIN);
-  Serial.print("Thermistor ADC Value: ");
-  Serial.println(analogValue);
-
-  if (tempC == DEVICE_DISCONNECTED_C) {
-    Serial.println("Error: sensor not found. Check wiring and pull-up resistor.");
-    data['status'] = "Unavaible";
-  } else {
-    
+  if (tempC == DEVICE_DISCONNECTED_C)
+  {
+    twilio->send_message(
+    to_num,
+    from_num,
+    "Disconnected from wifi, reconnected now!",
+    response
+    );
+  }
+  else if (tempC > ALARM_TEMP && cur_send <= send_cap)
+  {
+    snprintf(msg, sizeof(msg), "FREEZER IS ABOVE %.2f", ALARM_TEMP);
+    twilio->send_message(to_num, from_num, msg, response);
+    cur_send++;
+  }else if (tempC < ALARM_TEMP){
+    cur_send--;
   }
 
-  String payload = buildJson(data, "ESP32", "digitalTemp", tempC, "°C");
-  mqttClient.publish(TEMP_TOPIC, payload.c_str(), true);
-  data.clear();
-
   char val[15];
-  
-
   dtostrf(tempC, 7, 3, val);
-
   strncat(val, unit, 13);
 
   u8g2.clearBuffer();
